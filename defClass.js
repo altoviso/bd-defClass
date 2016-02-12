@@ -36,7 +36,7 @@ define(function(){
 			})
 		}
 
-		// pull the prototypes from the base (if any) and all the mixins (if any)
+		// pull the prototypes the mixins (if any)
 		var mixinPrototypes = [],
 			pullNames = mixinNames.length == 0;
 		if(mixins){
@@ -77,15 +77,14 @@ define(function(){
 			Object.getOwnPropertyNames(mixin).forEach(function(name){
 				if(!ignoreNames[name]){
 					if(seen[name]){
-						throw("mixin name clash: name=" + name + "; mixin #" + seen[name] + " and mixin " + mixinNames[i - 1]);
+						throw("mixin name clash: name=" + name + "; mixin " + seen[name] + " and mixin " + mixinNames[i - 1]);
 					}else{
 						seen[name] = mixinNames[mixinIndex] || ("#" + mixinIndex);
 					}
 					if(typeof mixin[name] === "object"){
 						Object.defineProperty(prototype, name, mixin[name]);
 					}else{
-						var descriptor = Object.getOwnPropertyDescriptor(mixin, name);
-						Object.defineProperty(prototype, name, descriptor);
+						Object.defineProperty(prototype, name, Object.getOwnPropertyDescriptor(mixin, name));
 					}
 				}
 			})
@@ -96,8 +95,8 @@ define(function(){
 		memberNames.forEach(function(name){
 			if(name == "statics"){
 				statics = members.statics;
-			}else if(name == "explicitConstructor"){
-				explicitConstructor = members.explicitConstructor;
+			}else if(name == "constructor"){
+				explicitConstructor = members.constructor;
 			}else{
 				if(typeof members[name] === "object"){
 					Object.defineProperty(prototype, name, members[name]);
