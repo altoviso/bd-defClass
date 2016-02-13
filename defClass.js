@@ -1,9 +1,15 @@
 "use strict";
 define(function(){
+
+	var DEFCLASS_CONSTRUCTOR = {},
+		MIXIN_TYPE_OBJECT = {},
+		MIXIN_TYPE_PROTOTYPE = {},
+		noop = function(){};
+
 	function defClass(
 		base,   // [constructor function; optional]
-		mixins,	// [array of constructor functions and/or objects --or-- hash of names to constructor functions and/or objects; optional]
-		members // [function _or_ object; required]
+		mixins,	// [array of constructor functions and/or objects --or-- array of pairs of [name, constructor function or objects]; optional]
+		members // [function --or-- object; required]
 	){
 		// juggle...
 		if(!members){
@@ -27,29 +33,32 @@ define(function(){
 			}
 		}
 
-		// if mixins is a hash (i.e., not an array), then pull the names out and convert mixins to an array
+		// if mixins is not an array of pairs, then sift out the names and mixins
 		var mixinNames = [];
-		if(mixins && !Array.isArray(mixins)){
-			mixins = Object.keys(mixins).map(function(name){
-				mixinNames.push(name);
-				return mixins[name];
+		if(mixins && mixins.length && Array.isArray(mixins[0])){
+			mixins = mixins.map(function(pair){
+				mixinNames.push(pair[0]);
+				return pair[1];
 			})
 		}
 
-		// pull the prototypes the mixins (if any)
+		// pull the prototypes of the mixins (if any)
 		var mixinPrototypes = [],
+			mixinTypes = [],
 			pullNames = mixinNames.length == 0;
 		if(mixins){
-			mixins.forEach(function(mixin){
+			mixins.forEach(function(mixin, mixinIndex){
 				if(typeof mixin === "function"){
 					mixinPrototypes.push(mixin.prototype);
+					mixinTypes.push(MIXIN_TYPE_PROTOTYPE);
 					if(pullNames){
-						mixinNames.push(mixin.className);
+						mixinNames.push(mixin.className || ("#" + mixinIndex));
 					}
 				}else{
 					mixinPrototypes.push(mixin);
+					mixinTypes.push(MIXIN_TYPE_OBJECT);
 					if(pullNames){
-						mixinNames.push(mixin.statics && mixin.statics.className);
+						mixinNames.push((mixin.statics && mixin.statics.className) || ("#" + mixinIndex));
 					}
 				}
 			});
@@ -71,17 +80,18 @@ define(function(){
 					result[value] = 1;
 					return result;
 				},
-				{constructor: 1, initializer: 1, statics: 1, defPrivate: 1}
+				{constructor: 1, statics: 1, defPrivate: 1}
 			);
 		mixinPrototypes.forEach(function(mixin, mixinIndex){
+			var mixinType = mixinTypes[mixinIndex];
 			Object.getOwnPropertyNames(mixin).forEach(function(name){
 				if(!ignoreNames[name]){
 					if(seen[name]){
 						throw("mixin name clash: name=" + name + "; mixin " + seen[name] + " and mixin " + mixinNames[i - 1]);
 					}else{
-						seen[name] = mixinNames[mixinIndex] || ("#" + mixinIndex);
+						seen[name] = mixinNames[mixinIndex];
 					}
-					if(typeof mixin[name] === "object"){
+					if(typeof mixin[name] === "object" && mixinType === MIXIN_TYPE_OBJECT){
 						Object.defineProperty(prototype, name, mixin[name]);
 					}else{
 						Object.defineProperty(prototype, name, Object.getOwnPropertyDescriptor(mixin, name));
@@ -91,17 +101,18 @@ define(function(){
 		});
 
 		var statics = null,
-			explicitConstructor = null;
+			initializer = null;
 		memberNames.forEach(function(name){
 			if(name == "statics"){
 				statics = members.statics;
 			}else if(name == "constructor"){
-				explicitConstructor = members.constructor;
+				initializer = members.constructor;
 			}else{
+				// note: members is always a hash, never a prototype from another object
 				if(typeof members[name] === "object"){
 					Object.defineProperty(prototype, name, members[name]);
 				}else{
-					prototype[name] = members[name];
+					Object.defineProperty(prototype, name, Object.getOwnPropertyDescriptor(members, name));
 				}
 			}
 		});
@@ -127,30 +138,82 @@ define(function(){
 		//compute the initializers, if any
 		var initializers = [];
 		if(mixins){
-			mixinPrototypes.forEach(function(mixinPrototype){
-				if(typeof mixinPrototype.initializer === "function"){
-					initializers.push(mixinPrototype.initializer)
+			mixins.forEach(function(mixin){
+				if(typeof mixin === "function"){
+					// mixin is a constructor of some type
+					if(mixin.constructorType === DEFCLASS_CONSTRUCTOR){
+						mixin.initializer && initializers.push(mixin.initializer);
+					}else{
+						// a constructor of unknown origin...this is the best we can do
+						initializers.push(mixin)
+					}
+				}else if(mixin.initializer){
+					initializers.push(mixin.initializer)
+				}else if(mixin.constructor){
+					initializers.push(mixin.constructor)
 				}
 			});
 		}
-		if(members.initializer){
-			initializers.push(members.initializer)
-		}
-		var initializersCount = initializers.length;
 
-		// define the canonical constructor, canonically
-		var constructor = prototype.constructor = function(){
-			return constructor._instanceFactory(prototype, arguments);
-		};
+		// compute the initializer if a constructor wasn't provided in members
+		if(!initializer){
+			if(base){
+				if(base.constructorType === DEFCLASS_CONSTRUCTOR){
+					base.initializer && initializers.unshift(base.initializer);
+				}else{
+					base.initializer && initializers.unshift(base);
+				}
+			}
+			var initializersCount = initializers.length;
+			if(initializersCount == 1){
+				initializer = initializers[0];
+			}else if(initializersCount){
+				initializer = function(){
+					for(var i = 0; i < initializersCount;){
+						initializers[i++].apply(this, arguments);
+					}
+				}
+			}else{
+				initializer = noop;
+			}
+		}
+
+		// compute the constructor
+		var constructor;
+		if(initializer === noop){
+			constructor = function(){
+				if(this.constructor.prototype === prototype && this.postCreate){
+					this.postCreate.apply(this, arguments);
+				}
+			}
+		}else{
+			constructor = function(){
+				var result = initializer.apply(this, arguments);
+				if(!result){
+					result = this;
+				}
+				if(result.constructor.prototype === prototype && result.postCreate){
+					result.postCreate.apply(result, arguments);
+				}
+				return result;
+			}
+		}
 		constructor.prototype = prototype;
+		prototype.constructor = constructor;
+
 
 		// decorate the constructor
+
+		// this is our marker to say that the constructor is a defClass-created constructor
+		constructor.constructorType = DEFCLASS_CONSTRUCTOR;
+		constructor.initializer = initializer;
+
 		if(statics){
 			Object.getOwnPropertyNames(statics).forEach(function(name){
 				if(typeof statics[name] === "object"){
 					Object.defineProperty(constructor, name, statics[name]);
 				}else{
-					constructor[name] = statics[name];
+					Object.defineProperty(constructor, name, Object.getOwnPropertyDescriptor(statics, name));
 				}
 			});
 		}
@@ -170,65 +233,6 @@ define(function(){
 				}
 			});
 			Object.defineProperty(constructor, "mixins", {enumerable: true, value: mixinsRef});
-		}
-		if(constructor._instanceFactory){
-			// custom instance factory provided; therefore, all done
-			return constructor;
-		}
-
-		// define an instance factory depending upon the kind of base class
-
-		if(explicitConstructor){
-			// explicit constructors take full responsibility initializing the object with the exception of postCreate
-			// if you want to squelch postCreate, provide a member postCreate that is a no-op
-			constructor._instanceFactory = function(targetPrototype, args){
-				var defaultResult = Object.create(targetPrototype),
-					overrideResult = explicitConstructor.apply(defaultResult, args),
-					result = overrideResult || defaultResult;
-				if(targetPrototype === prototype && result.postCreate){
-					prototype.postCreate.apply(result, args);
-				}
-				return result;
-			}
-		}else if(base){
-			if(base._instanceFactory){
-				// base was created by defClass...
-				constructor._instanceFactory = function(targetPrototype, args){
-					var result = base._instanceFactory(targetPrototype, args);
-					for(var i = 0; i < initializersCount;){
-						initializers[i++].apply(result, args);
-					}
-					if(targetPrototype === prototype && result.postCreate){
-						prototype.postCreate.apply(result, args);
-					}
-					return result;
-				}
-			}else{
-				// base was a canonical JavaScript constructor; therefore, not defined by defClass
-				constructor._instanceFactory = function(targetPrototype, args){
-					// this will work most of the time; when you absolutely have to use new, write an explicit constructor
-					var result = base.apply(Object.create(targetPrototype), args);
-					for(var i = 0; i < initializersCount;){
-						initializers[i++].apply(result, args);
-					}
-					if(targetPrototype === prototype && result.postCreate){
-						prototype.postCreate.apply(result, args);
-					}
-					return result;
-				}
-			}
-		}else{
-			// we're a base class
-			constructor._instanceFactory = function(targetPrototype, args){
-				var result = Object.create(targetPrototype);
-				for(var i = 0; i < initializersCount;){
-					initializers[i++].apply(result, args);
-				}
-				if(targetPrototype === prototype && result.postCreate){
-					prototype.postCreate.apply(result, args);
-				}
-				return result;
-			}
 		}
 
 		return constructor;
