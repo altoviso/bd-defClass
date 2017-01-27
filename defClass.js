@@ -1,242 +1,290 @@
-"use strict";
-define(function(){
+(function(factory){
+	if(typeof define != "undefined"){
+		define([], factory);
+	}else if(typeof module != "undefined"){
+		module.exports = factory();
+	}else{
+		defClass = factory();
+	}
+})(function(){
+	"use strict";
+	let STATICS = Symbol("defClass-statics"),
+		CLASS_NAME = Symbol("defClass-class-name"),
+		NONMIXIN_MEMBER = Symbol("defClass-nonmixin-member"),
+		CONSTRUCTOR = Symbol("defClass-constructor"),
+		SUPER = Symbol("defClass-super"),
+		MIXINS = Symbol("defClass-mixins");
 
-	var DEFCLASS_CONSTRUCTOR = {},
-		MIXIN_TYPE_OBJECT = {},
-		MIXIN_TYPE_PROTOTYPE = {},
-		noop = function(){};
+	function traversePrototypeChain(prototype, proc){
+		if(prototype && prototype !== Object.prototype){
+			proc(prototype);
+			traversePrototypeChain(Object.getPrototypeOf(prototype));
+		}
+	}
 
-	function defClass(
-		base,   // [constructor function; optional]
-		mixins,	// [array of constructor functions and/or objects --or-- array of pairs of [name, constructor function or objects]; optional]
-		members // [function --or-- object; required]
+	function defineProperty(src, dest, propertyId){
+		let value = src[propertyId];
+		if(typeof value === "object" && value != null){
+			Object.defineProperty(src, propertyId, value);
+		}else{
+			Object.defineProperty(dest, propertyId, Object.getOwnPropertyDescriptor(src, propertyId));
+		}
+	}
+
+	function generate0(className){
+		return eval(`
+				let ${className} = function(){};
+				${className};`);
+	}
+	function generate1(className, initializer){
+		return eval(`
+				let ${className} = function(){
+					let result = initializer.call(this, ...arguments);
+					if(result){
+						return result;
+					}
+				};
+				${className};`);
+	}
+	function generate2(className, initializers, initializersCount){
+		return eval(`
+				let ${className} = function(){
+					let result = this;
+					for(let i = 0; i < ${initializersCount}; i++){
+						result = initializers[i].call(result, ...arguments) || this;
+					}
+					if(result !== this){
+						return result;
+					}
+				${className};`);
+	}
+
+	function defClass(superClass, // constructor function; optional
+					  mixins,     // array of {constructor function | hash | pair of [name, {constructor function | hash}]}; optional
+					  members     // members factory function | hash; required
 	){
 		// juggle...
 		if(!members){
 			if(!mixins){
 				// one argument...
-				members = base;
-				base = null;
-				mixins = null;
+				members = superClass;
+				superClass = mixins = null;
 			}else{
 				// two arguments
-				if(typeof base === "function"){
-					// base and members
+				if(typeof superClass === "function"){
+					// superClass and members
 					members = mixins;
 					mixins = null;
-				}else{
+				}else if(Array.isArray(superClass)){
 					// mixins and members
 					members = mixins;
-					mixins = base;
-					base = null;
+					mixins = superClass;
+					superClass = null;
 				}
 			}
-		}
+		}// else three args
 
-		// if mixins is not an array of pairs, then sift out the names and mixins
-		var mixinNames = [];
-		if(mixins && mixins.length && Array.isArray(mixins[0])){
-			mixins = mixins.map(function(pair){
-				mixinNames.push(pair[0]);
-				return pair[1];
-			})
-		}
-
-		// pull the prototypes of the mixins (if any)
-		var mixinPrototypes = [],
-			mixinTypes = [],
-			pullNames = mixinNames.length == 0;
+		// pull the prototypes of the mixins and figure out mixin names and replace all [name, mixin] in mixins with mixin
+		let mixinCtors = [],
+			mixinPrototypes = [],
+			mixinNames = [];
 		if(mixins){
-			mixins.forEach(function(mixin, mixinIndex){
-				if(typeof mixin === "function"){
-					mixinPrototypes.push(mixin.prototype);
-					mixinTypes.push(MIXIN_TYPE_PROTOTYPE);
-					if(pullNames){
-						mixinNames.push(mixin.className || ("#" + mixinIndex));
-					}
-				}else{
-					mixinPrototypes.push(mixin);
-					mixinTypes.push(MIXIN_TYPE_OBJECT);
-					if(pullNames){
-						mixinNames.push((mixin.statics && mixin.statics.className) || ("#" + mixinIndex));
-					}
+			mixins = mixins.map(function(mixin, mixinIndex){
+				let name;
+				if(Array.isArray(mixin)){
+					name = mixin[0];
+					mixin = mixin[1];
 				}
+				if(typeof mixin === "function"){
+					// mixin is a constructor function
+					mixinCtors.push(mixin);
+					mixinPrototypes.push(mixin.prototype);
+					mixinNames.push(name || mixin[CLASS_NAME] || ("mixin#" + mixinIndex));
+				}else{
+					// mixin is a hash of methods and data definitions
+					// optionally, the hash may include a function at property==="constructor" which is
+					// used to initialize data that is operated upon by the mixin instances
+					mixin.constructor && mixinCtors.push(mixin.constructor);
+					mixinPrototypes.push(mixin);
+					mixinNames.push(name || (mixin[STATICS] && mixin[STATICS][CLASS_NAME]) || ("mixin#" + mixinIndex));
+				}
+				return mixin;
 			});
 		}
 
 		// if members is a factory, then compute the members...
-		var membersFactory = null;
 		if(typeof members === "function"){
-			membersFactory = members;
-			members = membersFactory.apply(null, base ? [base.prototype].concat(mixinPrototypes) : mixinPrototypes);
+			members = members.apply(null, superClass ? [superClass.prototype].concat(mixinPrototypes) : mixinPrototypes);
 		}
 
-		// build the prototype
-		var prototype = base ? Object.create(base.prototype) : {},
-			seen = {},
-			memberNames = Object.getOwnPropertyNames(members),
-			ignoreNames = memberNames.reduce(
-				function(result, value){
-					result[value] = 1;
-					return result;
-				},
-				{constructor: 1, statics: 1, defPrivate: 1}
-			);
+		let ctor = null,
+			prototype = superClass ? Object.create(superClass.prototype) : {},
+			className = null,
+			statics = null,
+			interfaceCatalog = {};
+		Object.getOwnPropertyNames(members).forEach(function(p){
+			interfaceCatalog[p] = NONMIXIN_MEMBER;
+			let value = members[p];
+			if(p === "constructor"){
+				ctor = value;
+			}else{
+				defineProperty(members, prototype, p);
+			}
+		});
+		Object.getOwnPropertySymbols(members).forEach(function(p){
+			interfaceCatalog[p] = NONMIXIN_MEMBER;
+			if(p === STATICS){
+				statics = members[STATICS];
+				className = statics[CLASS_NAME] || "";
+			}else{
+				defineProperty(members, prototype, p);
+			}
+		});
+
+		// populate interfaceCatalog with any names in the prototype chain
+		traversePrototypeChain(Object.getPrototypeOf(prototype), function(prototype){
+			Object.getOwnPropertyNames(prototype).forEach(function(p){
+				interfaceCatalog[p] = NONMIXIN_MEMBER;
+			});
+			Object.getOwnPropertySymbols(members).forEach(function(p){
+				interfaceCatalog[p] = NONMIXIN_MEMBER;
+			});
+		});
+
+
+		// augment the prototype with the interface(s) of the mixin(s)
 		mixinPrototypes.forEach(function(mixin, mixinIndex){
-			var mixinType = mixinTypes[mixinIndex];
-			Object.getOwnPropertyNames(mixin).forEach(function(name){
-				if(!ignoreNames[name]){
-					if(seen[name]){
-						throw("mixin name clash: name=" + name + "; mixin " + seen[name] + " and mixin " + mixinNames[i - 1]);
-					}else{
-						seen[name] = mixinNames[mixinIndex];
-					}
-					if(typeof mixin[name] === "object" && mixinType === MIXIN_TYPE_OBJECT){
-						Object.defineProperty(prototype, name, mixin[name]);
-					}else{
-						Object.defineProperty(prototype, name, Object.getOwnPropertyDescriptor(mixin, name));
-					}
+			let seen = {};
+			traversePrototypeChain(mixin, function(mixinPrototype){
+				function processMixinMember(p){
+					if(seen[p] || p == "constructor") return;
+					seen[p] = true;
+					if(!interfaceCatalog[p]){
+						interfaceCatalog[p] = mixinNames[mixinIndex];
+						defineProperty(mixinPrototype, prototype, p);
+					}else if(interfaceCatalog[p] !== NONMIXIN_MEMBER){
+						// this interface name has already been defined by another mixin; therefore, there is a clash
+						throw("mixin name clash: name=" + p + "; mixin " + interfaceCatalog[p] + " and mixin " + mixinNames[mixinIndex]);
+					}// else interfaceCatalog[p]===NONMIXIN_MEMBER and this slot was explicitly defined by members
 				}
-			})
+
+				Object.getOwnPropertyNames(mixinPrototype).forEach(processMixinMember);
+				Object.getOwnPropertySymbols(mixinPrototype).forEach(processMixinMember);
+			});
 		});
 
-		var statics = null,
-			initializer = null;
-		memberNames.forEach(function(name){
-			if(name == "statics"){
-				statics = members.statics;
-			}else if(name == "constructor"){
-				initializer = members.constructor;
+		let constructor = ctor;
+
+		if(!className || defClass.noEval){
+			if(constructor){
+				constructor = (function(constructor){
+					return function(){
+						let result = constructor.call(this, ...arguments);
+						if(result){
+							return result;
+						}
+					}
+				})(constructor);
 			}else{
-				// note: members is always a hash, never a prototype from another object
-				if(typeof members[name] === "object"){
-					Object.defineProperty(prototype, name, members[name]);
+				let initializers = (superClass ? [superClass] : []).concat(mixinCtors),
+					initializersCount = initializers.length;
+				if(initializersCount == 0){
+					constructor = function(){
+					}
+				}else if(initializersCount == 1){
+					let initializer = initializers[0];
+					constructor = function(){
+						let result = initializer.call(this, ...arguments);
+						if(result){
+							return result;
+						}
+					}
 				}else{
-					Object.defineProperty(prototype, name, Object.getOwnPropertyDescriptor(members, name));
-				}
-			}
-		});
-
-		if(!prototype.defPrivate){
-			Object.defineProperty(prototype, "defPrivate", {
-				value: function(name, value, getter, setter){
-					var definition = {
-						writable: true,
-						value: value
-					};
-					if(getter){
-						definition.get = getter
+					constructor = function(){
+						let result = this;
+						for(let i = 0; i < initializersCount; i++){
+							result = initializers[i].call(result, ...arguments) || this;
+						}
+						if(result !== this){
+							return result;
+						}
 					}
-					if(setter){
-						definition.set = setter;
-					}
-					Object.defineProperty(this, name, definition);
-				}
-			});
-		}
-
-		//compute the initializers, if any
-		var initializers = [];
-		if(mixins){
-			mixins.forEach(function(mixin){
-				if(typeof mixin === "function"){
-					// mixin is a constructor of some type
-					if(mixin.constructorType === DEFCLASS_CONSTRUCTOR){
-						mixin.initializer && initializers.push(mixin.initializer);
-					}else{
-						// a constructor of unknown origin...this is the best we can do
-						initializers.push(mixin)
-					}
-				}else if(mixin.initializer){
-					initializers.push(mixin.initializer)
-				}else if(mixin.constructor){
-					initializers.push(mixin.constructor)
-				}
-			});
-		}
-
-		// compute the initializer if a constructor wasn't provided in members
-		if(!initializer){
-			if(base){
-				if(base.constructorType === DEFCLASS_CONSTRUCTOR){
-					base.initializer && initializers.unshift(base.initializer);
-				}else{
-					base.initializer && initializers.unshift(base);
-				}
-			}
-			var initializersCount = initializers.length;
-			if(initializersCount == 1){
-				initializer = initializers[0];
-			}else if(initializersCount){
-				initializer = function(){
-					for(var i = 0; i < initializersCount;){
-						initializers[i++].apply(this, arguments);
-					}
-				}
-			}else{
-				initializer = noop;
-			}
-		}
-
-		// compute the constructor
-		var constructor;
-		if(initializer === noop){
-			constructor = function(){
-				if(this.constructor.prototype === prototype && this.postCreate){
-					this.postCreate.apply(this, arguments);
 				}
 			}
 		}else{
-			constructor = function(){
-				var result = initializer.apply(this, arguments);
-				if(!result){
-					result = this;
+			if(constructor){
+				constructor = generate1(className, constructor);
+			}else{
+				let initializers = (superClass ? [superClass] : []).concat(mixinCtors),
+					initializersCount = initializers.length;
+				if(initializersCount == 0){
+					constructor = generate0(className);
+				}else if(initializersCount == 1){
+					constructor = generate1(className, initializers[0]);
+				}else{
+					constructor = generate2(className, initializers, initializersCount);
 				}
-				if(result.constructor.prototype === prototype && result.postCreate){
-					result.postCreate.apply(result, arguments);
-				}
-				return result;
 			}
 		}
+		//canonical...
 		constructor.prototype = prototype;
 		prototype.constructor = constructor;
-
 
 		// decorate the constructor
 
 		// this is our marker to say that the constructor is a defClass-created constructor
-		constructor.constructorType = DEFCLASS_CONSTRUCTOR;
-		constructor.initializer = initializer;
+		Object.defineProperty(constructor, CONSTRUCTOR, {enumerable: true, value: true});
 
+		// add the statics given by members
 		if(statics){
-			Object.getOwnPropertyNames(statics).forEach(function(name){
-				if(typeof statics[name] === "object"){
-					Object.defineProperty(constructor, name, statics[name]);
-				}else{
-					Object.defineProperty(constructor, name, Object.getOwnPropertyDescriptor(statics, name));
-				}
+			Object.getOwnPropertyNames(statics).forEach(function(propertyId){
+				defineProperty(statics, constructor, propertyId)
+			});
+			Object.getOwnPropertySymbols(statics).forEach(function(propertyId){
+				defineProperty(statics, constructor, propertyId)
 			});
 		}
-		if(!constructor.members){
-			Object.defineProperty(constructor, "members", {enumerable: true, value: membersFactory || members});
+
+		// remember the superClass class
+		if(superClass){
+			Object.defineProperty(constructor, SUPER, {enumerable: true, value: superClass});
 		}
-		if(!constructor.super && base){
-			// therefore, this.constructor.super (this an instance of this class) points to the base prototype
-			Object.defineProperty(constructor, "super", {enumerable: true, value: base.prototype});
+
+		// remember the mixins; this.constructor[defClass.mixins].A (this an instance of this class) points to the mixin with the name A
+		let mixinsRef = {};
+		mixinNames.forEach(function(name, i){
+			mixinsRef[name] = mixins[i];
+		});
+		Object.defineProperty(constructor, MIXINS, {enumerable: true, value: mixinsRef});
+
+		// provide instanceOf method that knows about the super class (if any) and mixins (if any)
+		if(!members.instanceOf){
+			prototype.instanceOf = function(target){
+				return (this instanceof target) || (mixins && mixins.some(function(mixin){
+						return target === mixin;
+					}));
+			}
 		}
-		if(!constructor.mixins && mixinNames.length){
-			// therefore, this.constructor.mixin.A (this an instance of this class) points to the prototype/object of mixin with the name A
-			var mixinsRef = {};
-			mixinNames.forEach(function(name, i){
-				if(name){
-					mixinsRef[name] = mixinPrototypes[i];
+
+		// provide a factory method that provides automatic post-construction processing if and only if the method postCreate was defined
+		if(prototype.postCreate && !constructor.factory){
+			Object.defineProperty(constructor, "factory", {
+				configurable: true, enumerable: true, value: function(){
+					let result = new constructor(...arguments);
+					result.postCreate(...arguments);
+					return result;
 				}
 			});
-			Object.defineProperty(constructor, "mixins", {enumerable: true, value: mixinsRef});
 		}
 
 		return constructor;
 	}
+
+	defClass.statics = STATICS;
+	defClass.className = CLASS_NAME;
+	defClass.constructor = CONSTRUCTOR;
+	defClass.super = SUPER;
+	defClass.mixins = MIXINS;
 
 	return defClass;
 });
