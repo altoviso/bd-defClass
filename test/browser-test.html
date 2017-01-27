@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>defClass Browser Test</title>
+</head>
+<body>
+<div id="smoke"></div>
+<script src="../defClass.js"></script>
+<script src="../node_modules/smoke/smoke.js"></script>
+<script src="../node_modules/chai/chai.js"></script>
+<script src="./canonical.js"></script>
+<script>
+	(function(){
+		let urlParams = [];
+		qString = decodeURIComponent(window.location.search.substring(1));
+		((qString && qString.split("#")[0]) || "").split("&").forEach(arg =>{
+			urlParams.push(arg);
+		});
+		smoke.configure(urlParams);
+		smoke.run("*", smoke.options.logger).then(function(logger){
+			console.log("        total:" + logger.totalCount);
+			console.log("         pass:" + logger.passCount);
+			console.log("         fail:" + logger.failCount);
+			console.log("scaffold fail:" + logger._scaffoldFailCount);
+		});
+	})();
+</script>
+</body>
+</html>
