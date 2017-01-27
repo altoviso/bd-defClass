@@ -1,0 +1,32 @@
+{
+  "name": "defClass",
+  "version": "0.9.0",
+  "description": "Class definition machinery that suports multiple superclasses.",
+  "homepage": "http://github.com/altoviso/bd-defClass",
+  "bugs": "http://github.com/altoviso/bd-defClass/issues",
+  "main": "defClass.js",
+  "directories": {
+    "test": "test"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "chai": "^3.5.0"
+  },
+  "scripts": {
+  },
+  "github": "http://github.com/altoviso/bd-defClass",
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/altoviso/bd-defClass.git"
+  },
+  "keywords": [
+    "object-oriented",
+    "programming",
+    "OOP",
+    "OO",
+    "user-defined",
+    "type-definition"
+  ],
+  "author": "Rawld Gill <rgill@altoviso.com> (http://altoviso.com/)",
+  "license": "BSD-3-Clause"
+}
